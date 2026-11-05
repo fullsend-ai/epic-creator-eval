@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+.tox/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+workspace/
+*.local
+.eval-exit-code
