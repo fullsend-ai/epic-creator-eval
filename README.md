@@ -25,8 +25,20 @@ Creator branch, tag, or commit SHA (default `main`) or a pull request number.
 It resolves the request to one commit and runs that commit's suite through
 Fullsend on a GitHub-hosted runner.
 
+To run the same evaluation before merging, add the `run-eval` label to a pull
+request in this repository. It runs this repository's pull request merge commit
+against the Epic Creator default branch, so the label does not select an Epic
+Creator pull request (`pr` remains the dispatch input for that). Only
+same-repository pull requests start a run, and only when the actor applying the
+label has write or admin permission. Opening or updating a pull request does not
+start a run; remove and re-add the label to run again. A labeled run executes
+the full paid suite, so the cost warning below applies. The workload identity
+provider must also accept `repo:fullsend-ai/epic-creator-eval:pull_request`; if
+it does not, authentication fails before anything is evaluated.
+
 The selected source runs with evaluation credentials. Dispatch only revisions
-and pull requests you trust with those credentials.
+and pull requests you trust with those credentials, and apply `run-eval` only to
+pull request code you trust.
 
 Each dispatch pins the Epic Creator commit and the agent evaluation harness
 commit, records them with the Fullsend version as `provenance.txt`, and uploads

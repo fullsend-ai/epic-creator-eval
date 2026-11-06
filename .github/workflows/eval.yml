@@ -1,10 +1,11 @@
 name: Evaluate Epic Creator
 
 # Manual path for AISDLC-650: dispatch this workflow to run Epic Creator's
-# evaluation suite at a chosen revision or pull request head. The suite, its
-# cases, judges, thresholds, and Fullsend profile come from the selected
-# Epic Creator commit; this workflow only provides the runtime, credentials,
-# and artifact retention.
+# evaluation suite at a chosen revision or pull request head. Adding the
+# `run-eval` label to a pull request in this repository runs the same job on
+# that pull request's merge commit. The suite, its cases, judges, thresholds,
+# and Fullsend profile come from the selected Epic Creator commit; this
+# workflow only provides the runtime, credentials, and artifact retention.
 #
 # The selected source runs with evaluation credentials. Dispatch this workflow
 # only for code you trust.
@@ -22,6 +23,8 @@ on:
         required: false
         default: ""
         type: string
+  pull_request:
+    types: [labeled]
 
 permissions:
   contents: read
@@ -29,12 +32,40 @@ permissions:
 jobs:
   evaluate:
     name: Evaluate Epic Creator
+    if: >-
+      github.event_name == 'workflow_dispatch'
+      || (github.event_name == 'pull_request'
+          && github.event.label.name == 'run-eval'
+          && github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     permissions:
       contents: read
       id-token: write
     steps:
+      # A labeled pull request runs this repository's pull request code with
+      # evaluation credentials, so the actor applying the label must be able to
+      # push to this repository. Checked before any checkout or credential step.
+      - name: Authorize evaluator
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          GH_ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          if ! permission="$(gh api "repos/${GH_REPO}/collaborators/${GH_ACTOR}/permission" --jq '.permission')"; then
+            echo "::error::cannot verify repository permission for ${GH_ACTOR}"
+            exit 1
+          fi
+          case "$permission" in
+            write|admin) ;;
+            *)
+              echo "::error::${GH_ACTOR} has '${permission}' permission; run-eval requires write or admin"
+              exit 1
+              ;;
+          esac
+
       - name: Check out orchestration
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
