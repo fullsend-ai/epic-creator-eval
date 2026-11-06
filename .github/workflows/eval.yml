@@ -118,13 +118,14 @@ jobs:
           create_credentials_file: true
           export_environment_variables: true
 
-      # Installs the fullsend release and its rootless Podman and OpenShell
-      # runtime. __install_only__ skips the action's own run and upload.
+      # Installs fullsend and its rootless Podman and OpenShell runtime.
+      # __install_only__ skips the action's own run and upload. Both the action
+      # and the binary follow fullsend main, like the Epic Creator fleet.
       - name: Install fullsend
-        uses: fullsend-ai/fullsend@90b7310ff8751a3c70e5d68214770dc168a1cbe7 # v0.54.0
+        uses: fullsend-ai/fullsend@main
         with:
           agent: __install_only__
-          version: v0.54.0
+          version: main
 
       - name: Set up Python
         uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
@@ -142,6 +143,8 @@ jobs:
           uv venv --python 3.12 "$HARNESS_VENV"
           uv pip install --python "$HARNESS_VENV/bin/python" -e "${HARNESS_DIR}[anthropic]"
 
+      # Recorded before the offline lint so a preflight failure still leaves
+      # the evaluated revisions in the uploaded artifacts.
       - name: Record provenance
         env:
           EPIC_CREATOR_SHA: ${{ steps.sources.outputs.sha }}
@@ -158,6 +161,20 @@ jobs:
             echo "fullsend_version=$(fullsend --version)"
             echo "run_url=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           } | tee "$ARTIFACTS/provenance.txt"
+
+      # Resolves and composes the evaluated commit's Fullsend harness without
+      # network fetches, so a config or harness shape the pinned binary cannot
+      # read fails here instead of after cases start.
+      - name: Lint Fullsend configuration
+        env:
+          EPIC_CREATOR_DIR: ${{ runner.temp }}/epic-creator
+          ARTIFACTS: ${{ runner.temp }}/eval-artifacts
+        run: |
+          set -euo pipefail
+          fullsend lint epic-creator-eval \
+            --fullsend-dir "$EPIC_CREATOR_DIR/.fullsend" \
+            --forge github \
+            --offline 2>&1 | tee "$ARTIFACTS/fullsend-lint.log"
 
       - name: Run evaluation
         timeout-minutes: 300

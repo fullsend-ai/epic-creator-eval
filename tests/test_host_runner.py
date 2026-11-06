@@ -15,9 +15,11 @@ def _prepare(
     tmp_path: Path,
     *,
     execute_exit: int = 0,
+    collect_exit: int = 0,
     judge_exit: int = 0,
     report_exit: int = 0,
     case_result_text: str | None = None,
+    case_diagnostic: str | None = None,
 ) -> tuple[Path, Path, Path]:
     if case_result_text is None:
         case_result_text = json.dumps(
@@ -63,16 +65,30 @@ def _prepare(
         "out = pathlib.Path(a.output)\n"
         "out.mkdir(parents=True)\n"
         f"(out / 'run_result.json').write_text({case_result_text!r})\n"
+        f"diagnostic = {case_diagnostic!r}\n"
+        "if diagnostic is not None:\n"
+        "    case = pathlib.Path(a.workspace) / 'cases' / 'case-1'\n"
+        "    case.mkdir(parents=True, exist_ok=True)\n"
+        "    (case / 'diagnostic.txt').write_text(diagnostic)\n"
         f"raise SystemExit({execute_exit})\n",
     )
     _write(
         scripts / "collect.py",
-        "import argparse, pathlib\n"
+        "import argparse, pathlib, shutil\n"
         "p = argparse.ArgumentParser()\n"
         "for flag in ('--config', '--workspace', '--output'):\n"
         "    p.add_argument(flag)\n"
         "a = p.parse_args()\n"
-        "(pathlib.Path(a.output) / 'collection.json').write_text('{}')\n",
+        "out = pathlib.Path(a.output)\n"
+        "(out / 'collection.json').write_text('{}')\n"
+        "cases = pathlib.Path(a.workspace) / 'cases'\n"
+        "if cases.is_dir():\n"
+        "    for case in sorted(c for c in cases.iterdir() if c.is_dir()):\n"
+        "        for f in sorted(f for f in case.rglob('*') if f.is_file()):\n"
+        "            dest = out / 'cases' / case.name / f.relative_to(case)\n"
+        "            dest.parent.mkdir(parents=True, exist_ok=True)\n"
+        "            shutil.copy2(f, dest)\n"
+        f"raise SystemExit({collect_exit})\n",
     )
     _write(
         scripts / "score.py",
@@ -165,6 +181,64 @@ def test_execution_failure_is_nonzero_and_keeps_diagnostics(tmp_path):
 
     run_dir = output / "demo-suite" / "run-1"
     assert json.loads((run_dir / "run_result.json").read_text())["duration_s"] == 2.0
+    assert not (run_dir / "summary.yaml").exists()
+    assert not (run_dir / "report.html").exists()
+
+
+def test_execution_failure_still_collects_case_diagnostics(tmp_path):
+    epic, harness, output = _prepare(tmp_path, execute_exit=3, case_diagnostic="runner timed out\n")
+
+    assert _run(epic, harness, output) == 3
+
+    run_dir = output / "demo-suite" / "run-1"
+    collected = run_dir / "cases" / "case-1" / "diagnostic.txt"
+    assert collected.read_text() == "runner timed out\n"
+    assert not (run_dir / "summary.yaml").exists()
+    assert not (run_dir / "report.html").exists()
+
+
+def test_failed_case_still_collects_diagnostics_despite_zero_aggregate(tmp_path):
+    payload = json.dumps(
+        {
+            "exit_code": 0,
+            "per_case": {"case-ok": {"exit_code": 0}, "case-bad": {"exit_code": -1}},
+        }
+    )
+    epic, harness, output = _prepare(
+        tmp_path, case_result_text=payload, case_diagnostic="launch failed\n"
+    )
+
+    assert _run(epic, harness, output) != 0
+
+    run_dir = output / "demo-suite" / "run-1"
+    assert (run_dir / "cases" / "case-1" / "diagnostic.txt").read_text() == "launch failed\n"
+    assert not (run_dir / "summary.yaml").exists()
+    assert not (run_dir / "report.html").exists()
+
+
+def test_execute_and_collect_failure_keeps_execute_exit_and_diagnostics(tmp_path, capsys):
+    epic, harness, output = _prepare(
+        tmp_path, execute_exit=3, collect_exit=6, case_diagnostic="partial output\n"
+    )
+
+    assert _run(epic, harness, output) == 3
+
+    run_dir = output / "demo-suite" / "run-1"
+    assert (run_dir / "cases" / "case-1" / "diagnostic.txt").read_text() == "partial output\n"
+    assert not (run_dir / "summary.yaml").exists()
+    assert not (run_dir / "report.html").exists()
+    err = capsys.readouterr().err
+    assert "execute" in err
+    assert "collect" in err
+
+
+def test_collect_failure_after_successful_execution_is_nonzero(tmp_path):
+    epic, harness, output = _prepare(tmp_path, collect_exit=6)
+
+    assert _run(epic, harness, output) == 6
+
+    run_dir = output / "demo-suite" / "run-1"
+    assert (run_dir / "collection.json").is_file()
     assert not (run_dir / "summary.yaml").exists()
     assert not (run_dir / "report.html").exists()
 

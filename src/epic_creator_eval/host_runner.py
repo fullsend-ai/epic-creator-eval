@@ -4,9 +4,10 @@ The caller prepares an Epic Creator checkout and an agent-eval-harness checkout
 at the revisions to evaluate and owns credentials and publication. This module
 only drives the suite's own ``eval/profiles/fullsend.yaml`` through the
 harness's supported pipeline scripts. Every setup, execution, collection,
-judging, and reporting failure stays non-zero, and a judging failure still
-attempts the report. Quality results remain in the harness's ``run_result.json``,
-``summary.yaml``, and ``report.html``.
+judging, and reporting failure stays non-zero; a failed execution still attempts
+collection so per-case workspace diagnostics are kept, and a judging failure
+still attempts the report. Quality results remain in the harness's
+``run_result.json``, ``summary.yaml``, and ``report.html``.
 """
 
 from __future__ import annotations
@@ -163,43 +164,57 @@ def main(argv: list[str] | None = None) -> int:
             capture=True,
         )
         workspace = _workspace_path(workspace_proc)
-        _run_step(
-            "execute",
-            [
-                python,
-                str(scripts / "execute.py"),
-                "--config",
-                str(config),
-                "--workspace",
-                str(workspace),
-                "--output",
-                str(run_dir),
-                "--run-id",
-                run_id,
-            ],
-            cwd=epic_creator,
-            env=env,
-        )
-        execute_problem = _case_exit_failure(run_dir)
-        if execute_problem:
-            message, code = execute_problem
-            print(f"ERROR: {message}", file=sys.stderr)
-            raise StepError("execute", code)
-        _run_step(
-            "collect",
-            [
-                python,
-                str(scripts / "collect.py"),
-                "--config",
-                str(config),
-                "--workspace",
-                str(workspace),
-                "--output",
-                str(run_dir),
-            ],
-            cwd=epic_creator,
-            env=env,
-        )
+        execute_failure: StepError | None = None
+        try:
+            _run_step(
+                "execute",
+                [
+                    python,
+                    str(scripts / "execute.py"),
+                    "--config",
+                    str(config),
+                    "--workspace",
+                    str(workspace),
+                    "--output",
+                    str(run_dir),
+                    "--run-id",
+                    run_id,
+                ],
+                cwd=epic_creator,
+                env=env,
+            )
+            execute_problem = _case_exit_failure(run_dir)
+            if execute_problem:
+                message, code = execute_problem
+                print(f"ERROR: {message}", file=sys.stderr)
+                raise StepError("execute", code)
+        except StepError as exc:
+            # A failed execution still gets a collection attempt so per-case
+            # workspace diagnostics reach the uploaded artifacts.
+            execute_failure = exc
+            print(f"ERROR: execute failed (exit {exc.code}); attempting collect", file=sys.stderr)
+        try:
+            _run_step(
+                "collect",
+                [
+                    python,
+                    str(scripts / "collect.py"),
+                    "--config",
+                    str(config),
+                    "--workspace",
+                    str(workspace),
+                    "--output",
+                    str(run_dir),
+                ],
+                cwd=epic_creator,
+                env=env,
+            )
+        except StepError as exc:
+            if execute_failure is None:
+                raise
+            print(f"ERROR: collect also failed (exit {exc.code})", file=sys.stderr)
+        if execute_failure is not None:
+            raise execute_failure
         report_cmd = [
             python,
             str(scripts / "report.py"),

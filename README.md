@@ -40,14 +40,22 @@ The selected source runs with evaluation credentials. Dispatch only revisions
 and pull requests you trust with those credentials, and apply `run-eval` only to
 pull request code you trust.
 
-Each dispatch pins the Epic Creator commit and the agent evaluation harness
-commit, records them with the Fullsend version as `provenance.txt`, and uploads
-the run directory, its logs, and provenance on success and on failure. Which
-artifacts exist depends on how far the run got: results and logs are kept after
-an execution failure, and a judging failure still runs the report step. A failed
-case execution fails the run even when the harness's aggregate exit code is
-zero. The workload identity credentials file stays in the orchestration
-checkout, outside the evaluated source and every evaluation workspace.
+Each dispatch installs Fullsend from `main`, action and binary, and records the
+installed version with the Epic Creator and harness commit SHAs as
+`provenance.txt`; the run directory, logs, and provenance are uploaded on
+success and on failure. This matches the Epic Creator fleet's moving-`main`
+policy; there is no manual Fullsend revision resolution, and an evaluation run
+does not guarantee the same Fullsend commit as production at the same time.
+Before any case starts, the workflow lints the selected commit's `.fullsend`
+configuration offline with that binary, logging to `fullsend-lint.log`, so an
+incompatible configuration fails the run before spending. Which artifacts exist
+depends on how far the run got: results and logs are kept after an execution
+failure, which still runs the collection step so per-case workspace diagnostics
+are uploaded, and a judging failure still runs the report step. A failed case
+execution fails the run even when the harness's aggregate exit code is zero. The
+workload identity credentials file stays in the orchestration checkout, outside
+the evaluated source and every evaluation workspace. Live workload identity
+handoff and sandbox runtime behavior remain unverified until a run executes.
 
 **Cost.** The suite's `$80` budget is per case, and the Fullsend runner at the
 pinned harness revision accepts `max_budget_usd` as a hint only, so it does not
