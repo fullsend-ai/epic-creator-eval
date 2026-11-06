@@ -1,0 +1,163 @@
+name: Evaluate Epic Creator
+
+# Manual path for AISDLC-650: dispatch this workflow to run Epic Creator's
+# evaluation suite at a chosen revision or pull request head. The suite, its
+# cases, judges, thresholds, and Fullsend profile come from the selected
+# Epic Creator commit; this workflow only provides the runtime, credentials,
+# and artifact retention.
+#
+# The selected source runs with evaluation credentials. Dispatch this workflow
+# only for code you trust.
+
+on:
+  workflow_dispatch:
+    inputs:
+      revision:
+        description: Epic Creator branch, tag, or commit SHA (ignored when a PR number is given)
+        required: false
+        default: main
+        type: string
+      pr:
+        description: Optional fullsend-ai/epic-creator pull request number
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  evaluate:
+    name: Evaluate Epic Creator
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Check out orchestration
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      # One resolution per run: PR number -> pull request head ref, otherwise a
+      # branch, tag, or 40-character commit SHA. Checkouts live outside
+      # GITHUB_WORKSPACE so the host credentials file never reaches a copy of
+      # the evaluated project.
+      - name: Check out evaluated sources
+        id: sources
+        env:
+          PR_NUMBER: ${{ inputs.pr }}
+          REVISION: ${{ inputs.revision }}
+          EPIC_CREATOR_URL: https://github.com/fullsend-ai/epic-creator.git
+          HARNESS_URL: https://github.com/fullsend-ai/agent-eval-harness.git
+          HARNESS_SHA: edc14ec6e818996060523716a5aa9985c5a8dcb5 # v1.58.0
+        run: |
+          set -euo pipefail
+          EPIC_CREATOR_DIR="$RUNNER_TEMP/epic-creator"
+          HARNESS_DIR="$RUNNER_TEMP/agent-eval-harness"
+
+          git init --quiet "$EPIC_CREATOR_DIR"
+          git -C "$EPIC_CREATOR_DIR" remote add origin "$EPIC_CREATOR_URL"
+          if [[ -n "$PR_NUMBER" ]]; then
+            [[ "$PR_NUMBER" =~ ^[0-9]+$ ]] || { echo "::error::pr must be a number"; exit 1; }
+            git -C "$EPIC_CREATOR_DIR" fetch --quiet --depth 1 origin "refs/pull/${PR_NUMBER}/head"
+          else
+            revision="${REVISION:-main}"
+            [[ "$revision" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]] || { echo "::error::revision has invalid characters"; exit 1; }
+            git -C "$EPIC_CREATOR_DIR" fetch --quiet --depth 1 origin "$revision"
+          fi
+          git -C "$EPIC_CREATOR_DIR" checkout --quiet --detach FETCH_HEAD
+
+          git init --quiet "$HARNESS_DIR"
+          git -C "$HARNESS_DIR" remote add origin "$HARNESS_URL"
+          git -C "$HARNESS_DIR" fetch --quiet --depth 1 origin "$HARNESS_SHA"
+          git -C "$HARNESS_DIR" checkout --quiet --detach FETCH_HEAD
+          test "$(git -C "$HARNESS_DIR" rev-parse HEAD)" = "$HARNESS_SHA"
+
+          echo "sha=$(git -C "$EPIC_CREATOR_DIR" rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      # Host judges authenticate with this workload identity file. It lands in
+      # GITHUB_WORKSPACE, outside both checkouts and every evaluation copy.
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
+          project_id: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
+          create_credentials_file: true
+          export_environment_variables: true
+
+      # Installs the fullsend release and its rootless Podman and OpenShell
+      # runtime. __install_only__ skips the action's own run and upload.
+      - name: Install fullsend
+        uses: fullsend-ai/fullsend@90b7310ff8751a3c70e5d68214770dc168a1cbe7 # v0.54.0
+        with:
+          agent: __install_only__
+          version: v0.54.0
+
+      - name: Set up Python
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: '0.11.23'
+          python-version: '3.12'
+          enable-cache: false
+
+      - name: Install harness dependencies
+        env:
+          HARNESS_DIR: ${{ runner.temp }}/agent-eval-harness
+          HARNESS_VENV: ${{ runner.temp }}/harness-venv
+        run: |
+          set -euo pipefail
+          uv venv --python 3.12 "$HARNESS_VENV"
+          uv pip install --python "$HARNESS_VENV/bin/python" -e "${HARNESS_DIR}[anthropic]"
+
+      - name: Record provenance
+        env:
+          EPIC_CREATOR_SHA: ${{ steps.sources.outputs.sha }}
+          HARNESS_DIR: ${{ runner.temp }}/agent-eval-harness
+          CLOUD_ML_REGION: ${{ vars.FULLSEND_GCP_REGION }}
+          ARTIFACTS: ${{ runner.temp }}/eval-artifacts
+        run: |
+          set -euo pipefail
+          [[ -n "$CLOUD_ML_REGION" ]] || { echo "::error::FULLSEND_GCP_REGION repository variable is not set"; exit 1; }
+          mkdir -p "$ARTIFACTS"
+          {
+            echo "epic_creator_sha=$EPIC_CREATOR_SHA"
+            echo "harness_sha=$(git -C "$HARNESS_DIR" rev-parse HEAD)"
+            echo "fullsend_version=$(fullsend --version)"
+            echo "run_url=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          } | tee "$ARTIFACTS/provenance.txt"
+
+      - name: Run evaluation
+        timeout-minutes: 300
+        env:
+          EPIC_CREATOR_DIR: ${{ runner.temp }}/epic-creator
+          HARNESS_DIR: ${{ runner.temp }}/agent-eval-harness
+          HARNESS_PYTHON: ${{ runner.temp }}/harness-venv/bin/python
+          ARTIFACTS: ${{ runner.temp }}/eval-artifacts
+          PYTHONPATH: ${{ github.workspace }}/src
+          # Host judges use ANTHROPIC_VERTEX_PROJECT_ID with the workload
+          # identity file; fullsend uses the FULLSEND_GCP_* values to give the
+          # sandbox its own credentials.
+          ANTHROPIC_VERTEX_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
+          CLOUD_ML_REGION: ${{ vars.FULLSEND_GCP_REGION }}
+          FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
+          FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
+          RUN_ID: manual-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          "$HARNESS_PYTHON" -m epic_creator_eval.host_runner \
+            --epic-creator "$EPIC_CREATOR_DIR" \
+            --harness "$HARNESS_DIR" \
+            --output "$ARTIFACTS/run" \
+            --run-id "$RUN_ID" 2>&1 | tee "$ARTIFACTS/host-runner.log"
+
+      # Only the artifact directory is uploaded: never the workspace, the
+      # evaluated checkouts, or the host credentials file.
+      - name: Upload evaluation results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: epic-creator-eval-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/eval-artifacts
+          if-no-files-found: warn
