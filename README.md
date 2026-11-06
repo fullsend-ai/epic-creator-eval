@@ -11,19 +11,27 @@ configuration, dataset, and Fullsend runner profile. This repository owns the
 orchestration around that suite: revision selection, execution, artifact
 collection, and reporting.
 
-## Evaluation interface
+## Evaluation
 
-- Manual and pull request runs select an Epic Creator revision, evaluation
-  configuration, cases, and models. Resolve the requested revision to an exact
-  commit; a pull request run evaluates its head, never a fallback branch.
-- Record the source commit, selected inputs, and harness and runtime versions
-  with each result so runs can be reproduced and compared.
-- Retain per-case scores, aggregate verdicts, cost, duration, logs, generated
-  artifacts, and review evidence. Report setup and execution failures separately
-  from quality verdicts; publishing results must not hide the original outcome.
-- Keep reporting credentials outside the evaluated process and sandbox. Use
-  evaluation-scoped model credentials, perform no Jira writes, and restrict
-  access to sensitive run artifacts.
+- Manual and PR runs select the requested revision or PR, configuration, cases,
+  and models; revisions resolve to an exact commit and PR runs use their head.
+- Each run records scores, cost, duration, logs, artifacts, source SHA, and pinned versions.
+
+## Development
+
+Requires Python 3.12 and [uv](https://docs.astral.sh/uv/).
+
+```bash
+uv sync --locked
+make lint
+uv build
+```
+
+`make lint` checks Python linting, formatting, and types. `make format` rewrites
+Python formatting. `make test` runs pytest, which checks the installed package
+scaffold. The [checks workflow](.github/workflows/checks.yml) installs locked
+dependencies, runs lint and type checks, runs pytest, and builds the package
+without launching evaluations.
 
 ## Contributing
 
