@@ -13,9 +13,76 @@ collection, and reporting.
 
 ## Evaluation
 
-- Manual and PR runs select the requested revision or PR, configuration, cases,
-  and models; revisions resolve to an exact commit and PR runs use their head.
+- Manual runs select the requested revision or PR and use the suite's own
+  configuration, cases, and models; revisions resolve to an exact commit and PR
+  runs use their head.
 - Each run records scores, cost, duration, logs, artifacts, source SHA, and pinned versions.
+
+## Manual evaluation
+
+Dispatch the [evaluate workflow](.github/workflows/eval.yml) with an Epic
+Creator branch, tag, or commit SHA (default `main`) or a pull request number.
+It resolves the request to one commit and runs that commit's suite through
+Fullsend on a GitHub-hosted runner.
+
+To run the same evaluation before merging, add the `run-eval` label to a pull
+request in this repository. It runs this repository's pull request merge commit
+against the Epic Creator default branch, so the label does not select an Epic
+Creator pull request (`pr` remains the dispatch input for that). Only
+same-repository pull requests start a run, and only when the actor applying the
+label has write or admin permission. Opening or updating a pull request does not
+start a run; remove and re-add the label to run again. A labeled run executes
+the full paid suite, so the cost warning below applies. The workload identity
+provider must also accept `repo:fullsend-ai/epic-creator-eval:pull_request`; if
+it does not, authentication fails before anything is evaluated.
+
+The selected source runs with evaluation credentials. Dispatch only revisions
+and pull requests you trust with those credentials, and apply `run-eval` only to
+pull request code you trust.
+
+Each dispatch installs Fullsend from `main`, action and binary, and records the
+installed version with the Epic Creator and harness commit SHAs as
+`provenance.txt`; the run directory, logs, and provenance are uploaded on
+success and on failure. This matches the Epic Creator fleet's moving-`main`
+policy; there is no manual Fullsend revision resolution, and an evaluation run
+does not guarantee the same Fullsend commit as production at the same time.
+Before any case starts, the workflow lints the selected commit's `.fullsend`
+configuration offline with that binary, logging to `fullsend-lint.log`, so an
+incompatible configuration fails the run before spending. Which artifacts exist
+depends on how far the run got: results and logs are kept after an execution
+failure, which still runs the collection step so per-case workspace diagnostics
+are uploaded, and a judging failure still runs the report step. A failed case
+execution fails the run even when the harness's aggregate exit code is zero. The
+workload identity credentials file stays in the orchestration checkout, outside
+the evaluated source and every evaluation workspace. Live workload identity
+handoff and sandbox runtime behavior remain unverified until a run executes.
+
+**Cost.** The suite's `$80` budget is per case, and the Fullsend runner at the
+pinned harness revision accepts `max_budget_usd` as a hint only, so it does not
+stop spending. The six-hour job timeout limits duration, not spend. A full run
+executes 30 cases sequentially, its runtime is unknown, and the job timeout can
+end it with a partial run. No spending guard, sharding, or case selection is
+implemented.
+
+The workflow runs the host runner below. To run it yourself with prepared
+checkouts and model credentials:
+
+```bash
+PYTHONPATH=src <harness-python> -m epic_creator_eval.host_runner \
+  --epic-creator /path/to/epic-creator \
+  --harness /path/to/agent-eval-harness \
+  --output artifacts/manual-run \
+  --run-id manual
+```
+
+`<harness-python>` must be able to import the harness checkout, for example its
+`uv` environment. The caller prepares both checkouts at the revisions under
+evaluation and provides model credentials; the runner resolves no revisions,
+fetches no data, and handles no credentials. It runs the suite's
+`eval/profiles/fullsend.yaml` with suite defaults through the harness's
+workspace, execute, collect, judge, and report steps, and exits non-zero if any
+of those steps fails or if a case execution failed. Results, logs, cost, and
+duration land in `<output>/epic-decompose/<run-id>/`.
 
 ## Development
 
